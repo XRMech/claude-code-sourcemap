@@ -1,4 +1,5 @@
 import { Message, UserMessage } from '../query.js'
+import { queryHaiku } from '../services/claude.js'
 
 // Tools whose results are read-only and can be safely deduplicated/pruned
 const PRUNABLE_READ_TOOLS = new Set([
@@ -210,22 +211,141 @@ export function truncateWarmMessages(
   })
 }
 
+// --- Phase 3: Cold-tier Haiku summarization ---
+
+const COLD_WINDOW = parseInt(process.env.PRUNE_COLD_WINDOW ?? '20')
+const SUMMARY_THRESHOLD_CHARS = 2000
+const SUMMARY_MAX_CONCURRENCY = 5
+const ENABLE_SUMMARIZATION = process.env.PRUNE_SUMMARIZE !== 'false'
+
+const SUMMARY_SYSTEM_PROMPT = [
+  `You are a tool result summarizer for a coding assistant. Given a tool result, produce a concise summary that preserves:
+- File paths and key line numbers referenced
+- Structure: exports, classes, functions, key types found
+- Important values: error messages, test pass/fail counts, config values
+- Any TODOs, FIXMEs, or warnings
+Keep the summary under 200 tokens. Be factual, not interpretive.`,
+]
+
+/**
+ * Phase 3: Summarize cold-tier tool results using Haiku.
+ *
+ * Messages older than COLD_WINDOW turns that contain large read-only
+ * tool results are replaced with a Haiku-generated summary.
+ * The model retains awareness of what was seen (key facts, line numbers,
+ * structure) but at ~95% fewer tokens.
+ *
+ * Cost: ~700 Haiku tokens per summary (~$0.0005 each).
+ * Fallback: if Haiku fails, keeps the truncated version from Phase 2.
+ */
+export async function summarizeColdMessages(
+  messages: Message[],
+  currentTurn: number,
+  signal?: AbortSignal,
+): Promise<Message[]> {
+  // Collect indices of messages that need summarization
+  const candidates: { index: number; text: string }[] = []
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.type !== 'user') continue
+    if (!isPrunableMessage(msg)) continue
+    if (msg._pruneState === 'summarized' || msg._pruneState === 'deduped') continue
+
+    const age = currentTurn - (msg._turnCreated ?? 0)
+    if (age <= COLD_WINDOW) continue
+
+    const text = getToolResultText(msg)
+    if (!text || text.length < SUMMARY_THRESHOLD_CHARS) continue
+
+    candidates.push({ index: i, text })
+  }
+
+  if (candidates.length === 0) return messages
+
+  const results = [...messages]
+
+  // Process in batches to limit concurrency
+  for (let batchStart = 0; batchStart < candidates.length; batchStart += SUMMARY_MAX_CONCURRENCY) {
+    const batch = candidates.slice(batchStart, batchStart + SUMMARY_MAX_CONCURRENCY)
+
+    const summaries = await Promise.all(
+      batch.map(async ({ index, text }) => {
+        const msg = messages[index] as UserMessage
+        const toolName = msg._toolName ?? 'unknown'
+        const filePath = extractFilePath(msg)
+        const command = msg._toolInput?.command as string | undefined
+
+        // Build context header for the summarizer
+        let contextHeader = `Tool: ${toolName}`
+        if (filePath) contextHeader += `\nFile: ${filePath}`
+        if (command) contextHeader += `\nCommand: ${command}`
+
+        try {
+          const response = await queryHaiku({
+            systemPrompt: SUMMARY_SYSTEM_PROMPT,
+            userPrompt: `${contextHeader}\n\nResult (first 4000 chars):\n${text.slice(0, 4000)}`,
+            signal,
+          })
+          const summary = response.message.content[0]?.type === 'text'
+            ? response.message.content[0].text
+            : null
+          return { index, summary }
+        } catch {
+          // On failure, keep whatever state the message is in (likely truncated from Phase 2)
+          return { index, summary: null }
+        }
+      }),
+    )
+
+    for (const { index, summary } of summaries) {
+      if (!summary) continue // keep existing content on failure
+
+      const msg = results[index] as UserMessage
+      const toolName = msg._toolName ?? 'tool'
+      const filePath = extractFilePath(msg)
+      const command = (msg._toolInput?.command as string | undefined)
+
+      let label = `${toolName} result`
+      if (filePath) label += ` for ${filePath}`
+      else if (command) label += `: ${command.slice(0, 80)}`
+
+      const replaced = replaceToolResultContent(msg,
+        `[Summarized ${label}]\n${summary}\n[Re-read file or re-run command for full content]`,
+      )
+      replaced._pruneState = 'summarized'
+      results[index] = replaced
+    }
+  }
+
+  return results
+}
+
 /**
  * Main pruning pipeline.
  *
  * Phase 1: Deduplication — replace older duplicate file reads with pointers.
  * Phase 2: Truncation — trim large warm-tier results to head/tail snippets.
- * Phase 3 (future): Haiku summarization for cold-tier messages.
+ * Phase 3: Summarization — replace cold-tier results with Haiku summaries.
+ *
+ * Operates on a copy of messages for the API payload. The original
+ * messages array (stored in REPL state and logs) is never modified.
  */
-export function pruneMessages(
+export async function pruneMessages(
   messages: Message[],
   currentTurn: number,
-): Message[] {
+  signal?: AbortSignal,
+): Promise<Message[]> {
   // Phase 1: Deduplicate file reads (free, zero-risk)
   let pruned = deduplicateMessages(messages)
 
   // Phase 2: Truncate warm-tier results (free, low-risk)
   pruned = truncateWarmMessages(pruned, currentTurn)
+
+  // Phase 3: Summarize cold-tier results (low Haiku cost, medium risk)
+  if (ENABLE_SUMMARIZATION) {
+    pruned = await summarizeColdMessages(pruned, currentTurn, signal)
+  }
 
   return pruned
 }

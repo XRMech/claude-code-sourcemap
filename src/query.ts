@@ -146,7 +146,11 @@ export async function* query(
   // Prune messages before sending to API — deduplicates file reads,
   // truncates warm results, summarizes cold results.
   // Original messages are preserved for the recursive call below.
-  const prunedMessages = pruneMessages(messages, turnNumber)
+  const prunedMessages = await pruneMessages(
+    messages,
+    turnNumber,
+    toolUseContext.abortController.signal,
+  )
 
   function getAssistantResponse() {
     return querySonnet(
