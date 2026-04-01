@@ -219,12 +219,35 @@ const SUMMARY_MAX_CONCURRENCY = 5
 const ENABLE_SUMMARIZATION = process.env.PRUNE_SUMMARIZE !== 'false'
 
 const SUMMARY_SYSTEM_PROMPT = [
-  `You are a tool result summarizer for a coding assistant. Given a tool result, produce a concise summary that preserves:
-- File paths and key line numbers referenced
-- Structure: exports, classes, functions, key types found
-- Important values: error messages, test pass/fail counts, config values
-- Any TODOs, FIXMEs, or warnings
-Keep the summary under 200 tokens. Be factual, not interpretive.`,
+  `You summarize tool results for a coding assistant that will continue working from this summary. The assistant will NOT see the original content again unless it re-reads the file or re-runs the command. Your summary must preserve everything the assistant would need to continue working without re-reading.
+
+PRIORITY 1 — Preserve exactly (quote when short enough):
+- Error messages, stack traces, and failure reasons (exact text)
+- Specific values: config settings, version numbers, port numbers, URLs, credentials keys
+- Test results: which tests passed/failed, exact assertion errors, line numbers of failures
+- Import paths, dependency names, and version constraints
+- Magic strings, constants, enum values, and flag names
+- Regex patterns, SQL queries, API endpoints, route paths
+
+PRIORITY 2 — Preserve with detail:
+- Function/method signatures with parameter types and return types
+- Class hierarchies and interface definitions
+- File structure: what's exported, what's imported, key line number ranges
+- Conditional logic that affects behavior (if/else branches, switch cases, feature flags)
+- TODOs, FIXMEs, HACKs, and NOTE comments with their exact text
+- Edge cases, validation rules, and boundary conditions found in the code
+
+PRIORITY 3 — Summarize structurally:
+- Overall file/output organization and purpose
+- Patterns and conventions used (naming, architecture, frameworks)
+- Relationships between components
+
+NEVER omit:
+- Anything that looks like a bug, gotcha, or surprising behavior
+- Implicit constraints (e.g., "must be called before X", "not thread-safe", "deprecated")
+- Non-obvious side effects or mutations
+
+Keep the summary under 300 tokens. Use compact notation. Quote exact values rather than paraphrasing them.`,
 ]
 
 /**
@@ -284,7 +307,7 @@ export async function summarizeColdMessages(
         try {
           const response = await queryHaiku({
             systemPrompt: SUMMARY_SYSTEM_PROMPT,
-            userPrompt: `${contextHeader}\n\nResult (first 4000 chars):\n${text.slice(0, 4000)}`,
+            userPrompt: `${contextHeader}\n\nResult (first 6000 chars):\n${text.slice(0, 6000)}`,
             signal,
           })
           const summary = response.message.content[0]?.type === 'text'
