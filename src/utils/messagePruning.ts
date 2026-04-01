@@ -130,17 +130,102 @@ export function deduplicateMessages(messages: Message[]): Message[] {
   })
 }
 
+// --- Phase 2: Warm-tier truncation ---
+
+const HOT_WINDOW = parseInt(process.env.PRUNE_HOT_WINDOW ?? '10')
+const HEAD_LINES = 50
+const TAIL_LINES = 50
+const TRUNCATION_THRESHOLD_CHARS = 5000
+
+/**
+ * Extracts the text content from a tool_result block in a UserMessage.
+ */
+function getToolResultText(msg: UserMessage): string | null {
+  const content = msg.message.content
+  if (!Array.isArray(content)) return null
+
+  for (const block of content) {
+    if (
+      typeof block === 'object' &&
+      'type' in block &&
+      block.type === 'tool_result'
+    ) {
+      if (typeof block.content === 'string') return block.content
+      // Content can be an array of text/image blocks
+      if (Array.isArray(block.content)) {
+        return block.content
+          .filter((b: { type: string }) => b.type === 'text')
+          .map((b: { type: string; text: string }) => b.text)
+          .join('\n')
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Phase 2: Truncate warm-tier tool results.
+ *
+ * Messages older than HOT_WINDOW turns that contain large read-only
+ * tool results are truncated to head/tail snippets. The model can
+ * always re-read the file or re-run the command for full content.
+ *
+ * This is free (no API cost) and low-risk.
+ */
+export function truncateWarmMessages(
+  messages: Message[],
+  currentTurn: number,
+): Message[] {
+  return messages.map(msg => {
+    if (msg.type !== 'user') return msg
+    if (!isPrunableMessage(msg)) return msg
+    // Don't re-truncate already pruned messages
+    if (msg._pruneState === 'deduped' || msg._pruneState === 'truncated' || msg._pruneState === 'summarized') return msg
+
+    const age = currentTurn - (msg._turnCreated ?? 0)
+    if (age <= HOT_WINDOW) return msg
+
+    const text = getToolResultText(msg)
+    if (!text || text.length < TRUNCATION_THRESHOLD_CHARS) return msg
+
+    const lines = text.split('\n')
+    if (lines.length <= HEAD_LINES + TAIL_LINES + 5) return msg
+
+    const truncatedLineCount = lines.length - HEAD_LINES - TAIL_LINES
+    const toolLabel = msg._toolName ?? 'tool'
+    const filePath = extractFilePath(msg)
+    const locationHint = filePath ? ` for ${filePath}` : ''
+
+    const truncated = [
+      ...lines.slice(0, HEAD_LINES),
+      '',
+      `[... ${truncatedLineCount} lines truncated from ${toolLabel} result${locationHint} — re-read file or re-run command for full content ...]`,
+      '',
+      ...lines.slice(-TAIL_LINES),
+    ].join('\n')
+
+    const replaced = replaceToolResultContent(msg, truncated)
+    replaced._pruneState = 'truncated'
+    return replaced
+  })
+}
+
 /**
  * Main pruning pipeline.
  *
- * Phase 1 (current): Deduplication only.
- * Phase 2 (future): Add truncation for warm-tier messages.
- * Phase 3 (future): Add Haiku summarization for cold-tier messages.
+ * Phase 1: Deduplication — replace older duplicate file reads with pointers.
+ * Phase 2: Truncation — trim large warm-tier results to head/tail snippets.
+ * Phase 3 (future): Haiku summarization for cold-tier messages.
  */
 export function pruneMessages(
   messages: Message[],
-  _currentTurn: number,
+  currentTurn: number,
 ): Message[] {
   // Phase 1: Deduplicate file reads (free, zero-risk)
-  return deduplicateMessages(messages)
+  let pruned = deduplicateMessages(messages)
+
+  // Phase 2: Truncate warm-tier results (free, low-risk)
+  pruned = truncateWarmMessages(pruned, currentTurn)
+
+  return pruned
 }
