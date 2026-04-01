@@ -36,6 +36,42 @@ interface StreamResponse extends APIMessage {
   ttftMs?: number
 }
 
+// Lightweight size estimator — avoids full JSON.stringify just for logging a length
+function estimateJsonLength(items: unknown[]): number {
+  let total = 0
+  for (const item of items) {
+    if (typeof item === 'string') {
+      total += item.length
+    } else if (item && typeof item === 'object') {
+      // Rough estimate: walk top-level string values
+      for (const val of Object.values(item as Record<string, unknown>)) {
+        if (typeof val === 'string') {
+          total += val.length
+        } else if (Array.isArray(val)) {
+          for (const v of val) {
+            if (typeof v === 'string') total += v.length
+            else if (v && typeof v === 'object') total += JSON.stringify(v).length
+          }
+        } else if (val && typeof val === 'object') {
+          total += JSON.stringify(val).length
+        }
+      }
+    }
+  }
+  return total
+}
+
+// Cache for zodToJsonSchema conversions — avoids recomputing on every API call
+const zodSchemaCache = new WeakMap<object, Anthropic.Tool.InputSchema>()
+function getCachedJsonSchema(zodSchema: object): Anthropic.Tool.InputSchema {
+  let cached = zodSchemaCache.get(zodSchema)
+  if (!cached) {
+    cached = zodToJsonSchema(zodSchema) as Anthropic.Tool.InputSchema
+    zodSchemaCache.set(zodSchema, cached)
+  }
+  return cached
+}
+
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 export const CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE = 'Credit balance is too low'
@@ -391,12 +427,20 @@ export function assistantMessageToMessageParam(
   }
 }
 
+// Memoized — called multiple times per query with the same systemPrompt array
+let _lastSysPromptInput: string[] | null = null
+let _lastSysPromptResult: string[] | null = null
 function splitSysPromptPrefix(systemPrompt: string[]): string[] {
+  if (_lastSysPromptInput === systemPrompt && _lastSysPromptResult) {
+    return _lastSysPromptResult
+  }
   // split out the first block of the system prompt as the "prefix" for API
   // to match on in https://console.statsig.com/4aF3Ewatb6xPVpCwxb5nA3/dynamic_configs/claude_cli_system_prompt_prefixes
   const systemPromptFirstBlock = systemPrompt[0] || ''
   const systemPromptRest = systemPrompt.slice(1)
-  return [systemPromptFirstBlock, systemPromptRest.join('\n')].filter(Boolean)
+  _lastSysPromptInput = systemPrompt
+  _lastSysPromptResult = [systemPromptFirstBlock, systemPromptRest.join('\n')].filter(Boolean)
+  return _lastSysPromptResult
 }
 
 export async function querySonnet(
@@ -485,10 +529,10 @@ async function querySonnetWithPromptCaching(
       description: await _.prompt({
         dangerouslySkipPermissions: options.dangerouslySkipPermissions,
       }),
-      // Use tool's JSON schema directly if provided, otherwise convert Zod schema
+      // Use tool's JSON schema directly if provided, otherwise convert Zod schema (cached)
       input_schema: ('inputJSONSchema' in _ && _.inputJSONSchema
         ? _.inputJSONSchema
-        : zodToJsonSchema(_.inputSchema)) as Anthropic.Tool.InputSchema,
+        : getCachedJsonSchema(_.inputSchema)),
     })),
   )
 
@@ -497,7 +541,7 @@ async function querySonnetWithPromptCaching(
   logEvent('tengu_api_query', {
     model: options.model,
     messagesLength: String(
-      JSON.stringify([...system, ...messages, ...toolSchemas]).length,
+      estimateJsonLength([...system, ...messages, ...toolSchemas]),
     ),
     temperature: String(MAIN_QUERY_TEMPERATURE),
     provider: USE_BEDROCK ? 'bedrock' : USE_VERTEX ? 'vertex' : '1p',
@@ -523,7 +567,13 @@ async function querySonnetWithPromptCaching(
           messages: addCacheBreakpoints(messages),
           temperature: MAIN_QUERY_TEMPERATURE,
           system,
-          tools: toolSchemas,
+          tools: PROMPT_CACHING_ENABLED && toolSchemas.length > 0
+            ? toolSchemas.map((schema, i) =>
+                i === toolSchemas.length - 1
+                  ? { ...schema, cache_control: { type: 'ephemeral' as const } }
+                  : schema
+              )
+            : toolSchemas,
           ...(useBetas ? { betas } : {}),
           metadata: getMetadata(),
           ...(process.env.USER_TYPE === 'ant' && maxThinkingTokens > 0
@@ -684,7 +734,7 @@ async function queryHaikuWithPromptCaching({
 
   logEvent('tengu_api_query', {
     model,
-    messagesLength: String(JSON.stringify([...system, ...messages]).length),
+    messagesLength: String(estimateJsonLength([...system, ...messages])),
     provider: USE_BEDROCK ? 'bedrock' : USE_VERTEX ? 'vertex' : '1p',
   })
   let attemptNumber = 0
@@ -799,7 +849,7 @@ async function queryHaikuWithoutPromptCaching({
   logEvent('tengu_api_query', {
     model,
     messagesLength: String(
-      JSON.stringify([{ systemPrompt }, ...messages]).length,
+      estimateJsonLength([{ systemPrompt }, ...messages]),
     ),
     provider: USE_BEDROCK ? 'bedrock' : USE_VERTEX ? 'vertex' : '1p',
   })

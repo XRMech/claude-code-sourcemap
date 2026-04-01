@@ -193,14 +193,10 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       return await bashToolHasPermission(tool, command, context, allowedTools)
     }
     // For file editing tools, check session-only permissions
+    // needsPermissions was already checked above (line 171) — if we reach here, it returned true
     case FileEditTool:
     case FileWriteTool:
     case NotebookEditTool: {
-      // The types have already been validated by the tool,
-      // so we can safely pass this in
-      if (!tool.needsPermissions(input)) {
-        return { result: true }
-      }
       return {
         result: false,
         message: `Claude requested permissions to use ${tool.name}, but you haven't granted it yet.`,

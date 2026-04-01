@@ -1,6 +1,12 @@
 import { Command } from '../commands.js'
 import { getMessagesSetter } from '../messages.js'
 import { getContext } from '../context.js'
+import {
+  getClients,
+  getMCPTools,
+  getMCPCommands,
+} from '../services/mcpClient.js'
+import { getTools } from '../tools.js'
 import { getCodeStyle } from '../utils/style.js'
 import { clearTerminal } from '../utils/terminal.js'
 import { getOriginalCwd, setCwd } from '../utils/state.js'
@@ -16,6 +22,10 @@ export async function clearConversation(context: {
   context.setForkConvoWithMessagesOnTheNextRender([])
   getContext.cache.clear?.()
   getCodeStyle.cache.clear?.()
+  getClients.cache.clear?.()
+  getMCPTools.cache.clear?.()
+  getMCPCommands.cache.clear?.()
+  getTools.cache.clear?.()
   await setCwd(getOriginalCwd())
 }
 

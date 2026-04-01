@@ -26,7 +26,7 @@ import { hasWritePermission } from '../../utils/permissions/filesystem.js'
 import { getPatch } from '../../utils/diff.js'
 
 const MAX_LINES_TO_RENDER = 10
-const MAX_LINES_TO_RENDER_FOR_ASSISTANT = 16000
+const MAX_LINES_TO_RENDER_FOR_ASSISTANT = 200
 const TRUNCATED_MESSAGE =
   '<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with Grep in order to find the line numbers of what you are looking for.</NOTE>'
 

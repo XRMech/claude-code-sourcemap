@@ -29,14 +29,22 @@ import {
   normalizeMessagesForAPI,
 } from './utils/messages.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
+import { pruneMessages } from './utils/messagePruning.js'
 import { getCwd } from './utils/state.js'
 
 export type Response = { costUSD: number; response: string }
+export type PruneState = 'full' | 'truncated' | 'summarized' | 'deduped'
+
 export type UserMessage = {
   message: MessageParam
   type: 'user'
   uuid: UUID
   toolUseResult?: FullToolUseResult
+  // Pruning metadata — used by message pruning pipeline
+  _turnCreated?: number
+  _toolName?: string
+  _toolInput?: Record<string, unknown>
+  _pruneState?: PruneState
 }
 
 export type AssistantMessage = {
@@ -131,12 +139,18 @@ export async function* query(
     m1: AssistantMessage,
     m2: AssistantMessage,
   ) => Promise<BinaryFeedbackResult>,
+  turnNumber: number = 0,
 ): AsyncGenerator<Message, void> {
   const fullSystemPrompt = formatSystemPromptWithContext(systemPrompt, context)
 
+  // Prune messages before sending to API — deduplicates file reads,
+  // truncates warm results, summarizes cold results.
+  // Original messages are preserved for the recursive call below.
+  const prunedMessages = pruneMessages(messages, turnNumber)
+
   function getAssistantResponse() {
     return querySonnet(
-      normalizeMessagesForAPI(messages),
+      normalizeMessagesForAPI(prunedMessages),
       fullSystemPrompt,
       toolUseContext.options.maxThinkingTokens,
       toolUseContext.options.tools,
@@ -196,6 +210,7 @@ export async function* query(
       yield message
       // progress messages are not sent to the server, so don't need to be accumulated for the next turn
       if (message.type === 'user') {
+        message._turnCreated = turnNumber
         toolResults.push(message)
       }
     }
@@ -210,6 +225,7 @@ export async function* query(
       yield message
       // progress messages are not sent to the server, so don't need to be accumulated for the next turn
       if (message.type === 'user') {
+        message._turnCreated = turnNumber
         toolResults.push(message)
       }
     }
@@ -238,6 +254,7 @@ export async function* query(
     canUseTool,
     toolUseContext,
     getBinaryFeedbackResponse,
+    turnNumber + 1,
   )
 }
 
@@ -446,7 +463,7 @@ async function* checkPermissionsAndCallTool(
             messageID: assistantMessage.message.id,
             toolName: tool.name,
           })
-          yield createUserMessage(
+          const toolResultMsg = createUserMessage(
             [
               {
                 type: 'tool_result',
@@ -459,6 +476,11 @@ async function* checkPermissionsAndCallTool(
               resultForAssistant: result.resultForAssistant,
             },
           )
+          // Tag with pruning metadata for the message pruning pipeline
+          toolResultMsg._toolName = tool.name
+          toolResultMsg._toolInput = normalizedInput as Record<string, unknown>
+          toolResultMsg._pruneState = 'full'
+          yield toolResultMsg
           return
         case 'progress':
           logEvent('tengu_tool_use_progress', {

@@ -183,9 +183,9 @@ const command: Command = {
     }
 
     // Get full tool definitions including prompts and schemas
-    const tools = rawTools.map(t => {
+    const tools = await Promise.all(rawTools.map(async t => {
       // Get full prompt and schema
-      const fullPrompt = t.prompt({ dangerouslySkipPermissions: false })
+      const fullPrompt = await t.prompt({ dangerouslySkipPermissions: false })
       const schema = JSON.stringify(
         'inputJSONSchema' in t && t.inputJSONSchema
           ? t.inputJSONSchema
@@ -196,7 +196,7 @@ const command: Command = {
         name: t.name,
         description: `${fullPrompt}\n\nSchema:\n${schema}`,
       }
-    })
+    }))
 
     // Get current messages from REPL
     const messages = getMessagesGetter()()

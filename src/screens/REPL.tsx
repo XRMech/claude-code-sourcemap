@@ -1,4 +1,7 @@
 import { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+
+// Static empty set to avoid creating new instances on every render
+const EMPTY_SET = new Set<string>()
 import { Box, Newline, Static } from 'ink'
 import ProjectOnboarding, {
   markProjectOnboardingComplete,
@@ -437,9 +440,9 @@ export function REPL({
                 tools={_.tools}
                 verbose={verbose ?? false}
                 debug={debug}
-                erroredToolUseIDs={new Set()}
-                inProgressToolUseIDs={new Set()}
-                unresolvedToolUseIDs={new Set()}
+                erroredToolUseIDs={EMPTY_SET}
+                inProgressToolUseIDs={EMPTY_SET}
+                unresolvedToolUseIDs={EMPTY_SET}
                 shouldAnimate={false}
                 shouldShowDot={false}
               />
@@ -452,8 +455,8 @@ export function REPL({
                   tools={_.tools}
                   verbose={verbose ?? false}
                   debug={debug}
-                  erroredToolUseIDs={new Set()}
-                  inProgressToolUseIDs={new Set()}
+                  erroredToolUseIDs={EMPTY_SET}
+                  inProgressToolUseIDs={EMPTY_SET}
                   unresolvedToolUseIDs={
                     new Set([
                       (_.content.message.content[0]! as ToolUseBlockParam).id,

@@ -3,6 +3,12 @@ import { getContext } from '../context.js'
 import { getMessagesGetter, getMessagesSetter } from '../messages.js'
 import { API_ERROR_MESSAGE_PREFIX, querySonnet } from '../services/claude.js'
 import {
+  getClients,
+  getMCPTools,
+  getMCPCommands,
+} from '../services/mcpClient.js'
+import { getTools } from '../tools.js'
+import {
   createUserMessage,
   normalizeMessagesForAPI,
 } from '../utils/messages.js'
@@ -31,16 +37,18 @@ const compact = {
       "Provide a detailed but concise summary of our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next.",
     )
 
+    // Pass empty tools array — summarization doesn't need tool use,
+    // and sending tool schemas wastes tokens on every compact
     const summaryResponse = await querySonnet(
       normalizeMessagesForAPI([...messages, summaryRequest]),
       ['You are a helpful AI assistant tasked with summarizing conversations.'],
       0,
-      tools,
+      [],
       abortController.signal,
       {
         dangerouslySkipPermissions: false,
         model: slowAndCapableModel,
-        prependCLISysprompt: true,
+        prependCLISysprompt: false,
       },
     )
 
@@ -83,6 +91,10 @@ const compact = {
     ])
     getContext.cache.clear?.()
     getCodeStyle.cache.clear?.()
+    getClients.cache.clear?.()
+    getMCPTools.cache.clear?.()
+    getMCPCommands.cache.clear?.()
+    getTools.cache.clear?.()
 
     return '' // not used, just for typesafety. TODO: avoid this hack
   },

@@ -364,10 +364,10 @@ function PromptInput({
                 )}
               {debug && (
                 <Text dimColor>
-                  {`${countTokens(messages)} tokens (${
+                  {`${tokenUsage} tokens (${
                     Math.round(
                       (10000 * (countCachedTokens(messages) || 1)) /
-                        (countTokens(messages) || 1),
+                        (tokenUsage || 1),
                     ) / 100
                   }% cached)`}
                 </Text>
@@ -445,7 +445,7 @@ function PromptInput({
           </Box>
           <SentryErrorBoundary>
             <Box justifyContent="flex-end" gap={1}>
-              <TokenWarning tokenUsage={countTokens(messages)} />
+              <TokenWarning tokenUsage={tokenUsage} />
               <AutoUpdater
                 debug={debug}
                 onAutoUpdaterResult={onAutoUpdaterResult}

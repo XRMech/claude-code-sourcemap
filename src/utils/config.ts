@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { resolve, join } from 'path'
 import { cloneDeep, memoize, pick } from 'lodash-es'
 import { homedir } from 'os'
@@ -189,6 +189,9 @@ export function isProjectConfigKey(key: string): key is ProjectConfigKey {
   return PROJECT_CONFIG_KEYS.includes(key as ProjectConfigKey)
 }
 
+// Cached global config to avoid synchronous disk reads on every access
+let _globalConfigCache: GlobalConfig | null = null
+
 export function saveGlobalConfig(config: GlobalConfig): void {
   if (process.env.NODE_ENV === 'test') {
     for (const key in config) {
@@ -197,6 +200,7 @@ export function saveGlobalConfig(config: GlobalConfig): void {
     }
     return
   }
+  _globalConfigCache = null // invalidate cache on write
   saveConfig(
     GLOBAL_CLAUDE_FILE,
     {
@@ -211,7 +215,11 @@ export function getGlobalConfig(): GlobalConfig {
   if (process.env.NODE_ENV === 'test') {
     return TEST_GLOBAL_CONFIG_FOR_TESTING
   }
-  return getConfig(GLOBAL_CLAUDE_FILE, DEFAULT_GLOBAL_CONFIG)
+  if (_globalConfigCache) {
+    return _globalConfigCache
+  }
+  _globalConfigCache = getConfig(GLOBAL_CLAUDE_FILE, DEFAULT_GLOBAL_CONFIG)
+  return _globalConfigCache
 }
 
 export function getAnthropicApiKey(): null | string {
@@ -434,14 +442,14 @@ export const getMcprcConfig = memoize(
     }
     return {}
   },
-  // This function returns the same value as long as the cwd and mcprc file content remain the same
+  // Use file mtime as cache key instead of reading full file content
   () => {
     const cwd = getCwd()
     const mcprcPath = join(cwd, '.mcprc')
     if (existsSync(mcprcPath)) {
       try {
-        const stat = readFileSync(mcprcPath, 'utf-8')
-        return `${cwd}:${stat}`
+        const mtime = statSync(mcprcPath).mtimeMs
+        return `${cwd}:${mtime}`
       } catch {
         return cwd
       }

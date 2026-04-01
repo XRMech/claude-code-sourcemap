@@ -26,6 +26,10 @@ export const inputSchema = z.strictObject({
 })
 
 type In = typeof inputSchema
+
+// Cache for command descriptions to avoid redundant Haiku API calls
+const descriptionCache = new Map<string, string>()
+
 export type Out = {
   stdout: string
   stdoutLines: number // Total number of lines in original stdout, even if `stdout` is now truncated
@@ -37,6 +41,10 @@ export type Out = {
 export const BashTool = {
   name: 'Bash',
   async description({ command }) {
+    const cached = descriptionCache.get(command)
+    if (cached) {
+      return cached
+    }
     try {
       const result = await queryHaiku({
         systemPrompt: [
@@ -60,7 +68,9 @@ export const BashTool = {
         result.message.content[0]?.type === 'text'
           ? result.message.content[0].text
           : null
-      return description || 'Executes a bash command'
+      const desc = description || 'Executes a bash command'
+      descriptionCache.set(command, desc)
+      return desc
     } catch (error) {
       logError(error)
       return 'Executes a bash command'

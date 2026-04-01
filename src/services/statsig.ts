@@ -55,6 +55,47 @@ export const initializeStatsig = memoize(
   },
 )
 
+// Cache resolved environment metadata per session — these values don't change mid-session
+let cachedEnvContext: {
+  statsigClient: unknown
+  isGit: boolean
+  betas: string[]
+  model: string
+  envJson: string
+} | null = null
+let envContextPromise: Promise<typeof cachedEnvContext> | null = null
+
+function getEnvContext(modelOverride?: string) {
+  if (cachedEnvContext && (!modelOverride || cachedEnvContext.model === modelOverride)) {
+    return Promise.resolve(cachedEnvContext)
+  }
+  if (envContextPromise && !modelOverride) {
+    return envContextPromise
+  }
+  envContextPromise = Promise.all([
+    initializeStatsig(),
+    getIsGit(),
+    getBetas(),
+    modelOverride ? Promise.resolve(modelOverride) : getSlowAndCapableModel(),
+  ]).then(([statsigClient, isGit, betas, model]) => {
+    cachedEnvContext = {
+      statsigClient,
+      isGit,
+      betas,
+      model,
+      envJson: JSON.stringify({
+        isGit,
+        platform: env.platform,
+        nodeVersion: env.nodeVersion,
+        terminal: env.terminal,
+        version: MACRO.VERSION,
+      }),
+    }
+    return cachedEnvContext
+  })
+  return envContextPromise
+}
+
 export function logEvent(
   eventName: string,
   metadata: { [key: string]: string | undefined },
@@ -62,30 +103,19 @@ export function logEvent(
   if (env.isCI || process.env.NODE_ENV === 'test') {
     return
   }
-  Promise.all([
-    initializeStatsig(),
-    getIsGit(),
-    getBetas(),
-    metadata.model ? Promise.resolve(metadata.model) : getSlowAndCapableModel(),
-  ]).then(([statsigClient, isGit, betas, model]) => {
-    if (!statsigClient) return
+  getEnvContext(metadata.model).then(ctx => {
+    if (!ctx?.statsigClient) return
 
     const eventMetadata: Record<string, string> = {
       ...metadata,
-      model,
+      model: ctx.model,
       sessionId: SESSION_ID,
       userType: process.env.USER_TYPE || '',
       ...(process.env.SWE_BENCH_RUN_ID
         ? { sweBenchId: process.env.SWE_BENCH_RUN_ID }
         : {}),
-      ...(betas.length > 0 ? { betas: betas.join(',') } : {}),
-      env: JSON.stringify({
-        isGit,
-        platform: env.platform,
-        nodeVersion: env.nodeVersion,
-        terminal: env.terminal,
-        version: MACRO.VERSION,
-      }),
+      ...(ctx.betas.length > 0 ? { betas: ctx.betas.join(',') } : {}),
+      env: ctx.envJson,
     }
 
     // Debug logging when debug mode is enabled
@@ -104,7 +134,7 @@ export function logEvent(
       eventName,
       metadata: eventMetadata,
     }
-    statsigClient.logEvent(event)
+    ;(ctx.statsigClient as { logEvent: (e: StatsigEvent) => void }).logEvent(event)
   })
 }
 
